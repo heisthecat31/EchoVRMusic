@@ -33,6 +33,9 @@
 #endif
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+#define COBJMACROS
+#include <mmdeviceapi.h>
+#include <audiopolicy.h>
 #include <windowsx.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -136,7 +139,7 @@ static Setting g_set[] = {   /* last field before val: the column (0 speakers, 1
 typedef struct { RECT rc; int id; } Hot;
 enum {
     H_NONE = 0, H_NAV0 = 1, /* H_NAV0 + page */
-    H_BROWSE = 10, H_DETECT, H_INSTALL, H_UNINSTALL, H_OPEN, H_RESET, H_SRC_SYSTEM, H_SRC_APP, H_HELP, H_CLOSE,
+    H_BROWSE = 10, H_DETECT, H_INSTALL, H_UNINSTALL, H_OPEN, H_RESET, H_SRC_SYSTEM, H_SRC_APP, H_HELP, H_CLOSE, H_APP_PICK = 60, H_APP0 = 70 /* + index, up to 16 */,
     H_SETTING0 = 100 /* + index */
 };
 
@@ -144,6 +147,11 @@ typedef struct { wchar_t text[300]; COLORREF col; } LogLine;
 
 static HINSTANCE g_inst;
 static HWND g_wnd, g_path, g_app;
+static wchar_t g_appName[64] = L"spotify.exe";   /* the app picked for "One app" */
+static wchar_t g_apps[16][64];                    /* apps with audio open, for the dropdown */
+static int g_napps;
+static BOOL g_appsOpen;                           /* the dropdown list is showing */
+static RECT g_appsBtn;
 static int g_hover = H_NONE, g_drag = -1, g_scroll = 0, g_scrollMax = 0;
 static BOOL g_help;   /* the help panel is open */
 static double g_dpi = 1.0;
@@ -278,7 +286,65 @@ static void ResetSettings(void) {
     for (i = 0; i < NSET; i++) RegDeleteKeyValueW(HKEY_CURRENT_USER, REG_KEY, g_set[i].reg);
     RegDeleteKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"Source");
     LoadSettings();
-    if (g_app) SetWindowTextW(g_app, L"spotify.exe");
+    wcscpy_s(g_appName, 64, L"spotify.exe");
+}
+
+/* ---- apps playing audio (the "One app" dropdown) ------------------------------------------------ */
+/* The audio interfaces' IDs (the SDK only declares them for C). */
+static const GUID kCLSID_MMDeviceEnumerator = {0xBCDE0395, 0xE52F, 0x467C, {0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E}};
+static const GUID kIID_IMMDeviceEnumerator = {0xA95664D2, 0x9614, 0x4F35, {0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6}};
+static const GUID kIID_IAudioSessionManager2 = {0x77AA99A0, 0x1BD6, 0x484F, {0x8B, 0xC7, 0x2C, 0x65, 0x4C, 0x9A, 0x9B, 0x6F}};
+static const GUID kIID_IAudioSessionControl2 = {0xBFB7FF88, 0x7239, 0x4FC9, {0x8F, 0xA2, 0x07, 0xC9, 0x50, 0xBE, 0x9C, 0x6D}};
+/* Every app with an audio session on any active playback device (so an app sent to another output
+ * is listed too), by exe name, without duplicates, Echo itself or system sounds. */
+static void ListAudioApps(void) {
+    IMMDeviceEnumerator* en = NULL;
+    IMMDeviceCollection* col = NULL;
+    UINT nd = 0, d;
+    g_napps = 0;
+    if (FAILED(CoCreateInstance(&kCLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &kIID_IMMDeviceEnumerator, (void**)&en))) return;
+    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &col))) {
+        IMMDeviceCollection_GetCount(col, &nd);
+        for (d = 0; d < nd; d++) {
+            IMMDevice* dev = NULL;
+            IAudioSessionManager2* mgr = NULL;
+            IAudioSessionEnumerator* se = NULL;
+            int ns = 0, s;
+            if (FAILED(IMMDeviceCollection_Item(col, d, &dev))) continue;
+            if (SUCCEEDED(IMMDevice_Activate(dev, &kIID_IAudioSessionManager2, CLSCTX_ALL, NULL, (void**)&mgr)) &&
+                SUCCEEDED(IAudioSessionManager2_GetSessionEnumerator(mgr, &se))) {
+                IAudioSessionEnumerator_GetCount(se, &ns);
+                for (s = 0; s < ns && g_napps < 16; s++) {
+                    IAudioSessionControl* ctl = NULL;
+                    IAudioSessionControl2* ctl2 = NULL;
+                    DWORD pid = 0;
+                    if (FAILED(IAudioSessionEnumerator_GetSession(se, s, &ctl))) continue;
+                    if (SUCCEEDED(IAudioSessionControl_QueryInterface(ctl, &kIID_IAudioSessionControl2, (void**)&ctl2))) {
+                        if (SUCCEEDED(IAudioSessionControl2_GetProcessId(ctl2, &pid)) && pid && pid != GetCurrentProcessId()) {
+                            HANDLE ph = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                            wchar_t path[MAX_PATH];
+                            DWORD len = MAX_PATH;
+                            if (ph && QueryFullProcessImageNameW(ph, 0, path, &len)) {
+                                const wchar_t* name = wcsrchr(path, L'\\') ? wcsrchr(path, L'\\') + 1 : path;
+                                int k, dup = 0;
+                                for (k = 0; k < g_napps; k++) if (!_wcsicmp(g_apps[k], name)) dup = 1;
+                                if (!dup && _wcsicmp(name, L"echovr.exe") && _wcsicmp(name, L"echovr_openxr.exe"))
+                                    wcscpy_s(g_apps[g_napps++], 64, name);
+                            }
+                            if (ph) CloseHandle(ph);
+                        }
+                        IAudioSessionControl2_Release(ctl2);
+                    }
+                    IAudioSessionControl_Release(ctl);
+                }
+            }
+            if (se) IAudioSessionEnumerator_Release(se);
+            if (mgr) IAudioSessionManager2_Release(mgr);
+            IMMDevice_Release(dev);
+        }
+        IMMDeviceCollection_Release(col);
+    }
+    IMMDeviceEnumerator_Release(en);
 }
 
 /* ---- game folder ------------------------------------------------------------------------------ */
@@ -701,12 +767,14 @@ static void PageSettings(int l, int t, int r, int b) {
             AddHot(x0 + sw, y, x1, y + S(32), H_SRC_APP);
             y += S(42);
             if (app) {
-                Round(x0, y, x1, y + S(32), S(10), C_SURFACE);
-                MoveWindow(g_app, x0 + S(12), y + S(7), cw - S(24), S(20), FALSE);
-                ShowWindow(g_app, SW_SHOWNA);
+                /* the picked app; a click opens the list of apps playing sound */
+                BOOL hov = g_hover == H_APP_PICK || g_appsOpen;
+                Round(x0, y, x1, y + S(32), S(10), hov ? C_LINE : C_SURFACE);
+                Text(g_appName, x0 + S(14), y, x1 - S(34), y + S(32), g_fBody, C_TEXT, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                Text(g_appsOpen ? L"\x25B4" : L"\x25BE", x1 - S(30), y, x1 - S(10), y + S(32), g_fBody, C_MUTED, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+                AddHot(x0, y, x1, y + S(32), H_APP_PICK);
+                SetRect(&g_appsBtn, x0, y, x1, y + S(32));
                 y += S(42);
-            } else {
-                ShowWindow(g_app, SW_HIDE);
             }
             y += S(14);
         }
@@ -819,6 +887,24 @@ static void Paint(HWND hwnd) {
     }
     if (ShowSettings()) Fill(pad, contentT - S(1), w - pad, contentT, C_LINE);
 
+    if (g_appsOpen && ShowSettings() && !g_help) {
+        int rowH = S(32), n = g_napps ? g_napps : 1, i;
+        int l = g_appsBtn.left, r = g_appsBtn.right, t = g_appsBtn.bottom + S(4), b = t + n * rowH + S(8);
+        g_clipTop = 0; g_clipBottom = h;
+        Round(l, t, r, b, S(12), C_LINE);
+        Round(l + 1, t + 1, r - 1, b - 1, S(12), C_SURFACE);
+        if (!g_napps)
+            Text(L"No apps are playing sound", l + S(14), t + S(4), r - S(10), t + S(4) + rowH, g_fSmall, C_MUTED, DT_SINGLELINE | DT_VCENTER);
+        for (i = 0; i < g_napps; i++) {
+            int y = t + S(4) + i * rowH, id = H_APP0 + i;
+            BOOL sel = !_wcsicmp(g_apps[i], g_appName);
+            if (g_hover == id) Round(l + S(4), y, r - S(4), y + rowH, S(8), C_LINE);
+            Text(g_apps[i], l + S(14), y, r - S(30), y + rowH, g_fBody, sel ? C_ACCENT2 : C_TEXT, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            if (sel) Text(L"\x2713", r - S(30), y, r - S(10), y + rowH, g_fBody, C_ACCENT2, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            AddHot(l, y, r, y + rowH, id);
+        }
+    }
+
     if (g_help) {
         g_nhot = 0;            /* only the panel takes clicks while it's open */
         g_clipTop = 0; g_clipBottom = h;
@@ -860,11 +946,7 @@ static void DragSlider(int i, int x) {
 }
 
 static void SaveSource(void) {
-    if (_wcsnicmp(g_source, L"process:", 8) == 0) {
-        wchar_t exe[200];
-        GetWindowTextW(g_app, exe, 200);
-        _snwprintf(g_source, 260, L"process:%s", exe[0] ? exe : L"spotify.exe");
-    }
+    if (_wcsnicmp(g_source, L"process:", 8) == 0) _snwprintf(g_source, 260, L"process:%s", g_appName);
     RegPut(L"Source", g_source);
 }
 
@@ -876,7 +958,13 @@ static void Click(int id, int x) {
     else if (id == H_UNINSTALL) StartInstall(TRUE);
     else if (id == H_RESET) ResetSettings();
     else if (id == H_SRC_SYSTEM) { wcscpy(g_source, L"system"); SaveSource(); }
-    else if (id == H_SRC_APP) { wcscpy(g_source, L"process:"); SaveSource(); SetFocus(g_app); }
+    else if (id == H_SRC_APP) {
+        wcscpy(g_source, L"process:");
+        SaveSource();
+        ListAudioApps();
+        g_appsOpen = TRUE;
+    }
+    else if (id == H_APP_PICK) { ListAudioApps(); g_appsOpen = TRUE; }
     else if (id >= H_SETTING0 && id < H_SETTING0 + NSET) {
         int i = id - H_SETTING0;
         if (g_set[i].kind == K_TOGGLE) { g_set[i].val = g_set[i].val >= 0.5 ? 0 : 1; SaveSetting(i); }
@@ -904,11 +992,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_brEdit = CreateSolidBrush(C_SURFACE);
         /* the folder lives in a hidden edit control; the app name is typed into a visible one */
         g_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd, (HMENU)1, g_inst, NULL);
-        g_app = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd, (HMENU)2, g_inst, NULL);
         SendMessageW(g_app, WM_SETFONT, (WPARAM)g_fBody, 0);
         LoadSettings();
         if (_wcsnicmp(g_source, L"process:", 8) == 0 && g_source[8]) wcscpy(exe, g_source + 8);
-        SetWindowTextW(g_app, exe);
+        wcscpy_s(g_appName, 64, exe);
         if (g_argDir[0]) SetWindowTextW(g_path, g_argDir);
         else if (DetectGameDir(d)) SetWindowTextW(g_path, d);
         if (g_host) SetTimer(hwnd, 1, 1000, NULL);
@@ -929,7 +1016,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         Paint(hwnd);
         return 0;
     case WM_KEYDOWN:
-        if (wp == VK_ESCAPE && g_help) { g_help = FALSE; InvalidateRect(hwnd, NULL, FALSE); }
+        if (wp == VK_ESCAPE && (g_help || g_appsOpen)) { g_help = FALSE; g_appsOpen = FALSE; InvalidateRect(hwnd, NULL, FALSE); }
         return 0;
     case WM_MOUSEWHEEL:
         if (!g_help && ShowSettings()) {
@@ -961,6 +1048,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(lp), id = HitTest(x, GET_Y_LPARAM(lp));
         SetFocus(hwnd);
+        if (g_appsOpen) {
+            if (id >= H_APP0 && id < H_APP0 + g_napps) {
+                wcscpy_s(g_appName, 64, g_apps[id - H_APP0]);
+                wcscpy(g_source, L"process:");
+                SaveSource();
+            }
+            g_appsOpen = FALSE;
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (id != H_NONE) Click(id, x);
         else if (g_help) InvalidateRect(hwnd, NULL, FALSE);
         return 0;

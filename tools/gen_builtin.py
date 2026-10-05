@@ -2,24 +2,15 @@
 
 Usage: python tools/gen_builtin.py
 
-- BUILTIN_SETTINGS: default settings plus the arena's speakers (Speaker@<music event> lines).
-- BUILTIN_MAPS: every maps/<level>.txt in this project (exported from Blender with
-  blender/echovrmusic_speakers.py).
-Then run setup/build_setup.bat.
+- BUILTIN_MAPS: every maps/<level>.txt in this project (placed in game with the dev build, or
+  exported from Blender with blender/echovrmusic_speakers.py). A map's speakers replace the music
+  speakers Echo itself uses on that level, so this covers flat-music levels like the arena too.
+- BUILTIN_SETTINGS: default settings (none needed today; the plugin's defaults are in Settings).
+Then run setup/build_setup.bat (or tools/make_release.py).
 """
 import os
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-
-# mpl_arena_a plays its music flat (music event 0x4edefef9): Echo Speaker System's 18 arena
-# speakers, each moved 7.5 m in toward the middle (the originals sat too far out), lower ring 10 m
-# up, upper ring 35 m up (Echo coordinates, z runs goal to goal).
-ARENA = [
-    (28.7, 10, 18), (27.5, 10, 0), (28.7, 10, -18), (23.2, 10, -39.5), (-23.2, 10, -39.5),
-    (-28.7, 10, -18), (-27.5, 10, 0), (-28.7, 10, 18), (-23.2, 10, 39.5), (23.2, 10, 39.5),
-    (-24.9, 35, 26.5), (-26.9, 35, 8.7), (-26.9, 35, -8.7), (-24.9, 35, -26.5), (24.9, 35, -26.5),
-    (26.9, 35, -8.7), (26.9, 35, 8.7), (24.9, 35, 26.5),
-]
 
 
 def raw(text):
@@ -27,7 +18,7 @@ def raw(text):
 
 
 def main():
-    settings = "\n".join("Speaker@0x4edefef9 = %g %g %g" % p for p in ARENA) + "\n"
+    settings = ""
     maps = []
     mdir = os.path.join(ROOT, "maps")
     for fn in sorted(os.listdir(mdir)):

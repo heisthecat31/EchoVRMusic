@@ -289,6 +289,47 @@ static void LoadRegistrySettings(Settings& s) {
     RegCloseKey(key);
 }
 
+#ifdef EVM_DEV
+// ---- dev build only (build_dev.bat): speaker files placed in game -----------------------------
+// plugins\EchoVRMusic\maps\<level>.txt, written by keys 1 and 2, replace that level's speakers.
+// Release builds leave all of this out.
+
+static std::string ReadFile(const std::string& path) {
+    std::string out;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "rb") || !f) return out;
+    char buf[4096]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+    fclose(f);
+    return out;
+}
+
+static void LoadUserMaps(Settings& s) {
+    WIN32_FIND_DATAA fd;
+    std::string dir = g_dir + "EchoVRMusic\\maps\\";
+    HANDLE h = FindFirstFileA((dir + "*.txt").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        std::string n = fd.cFileName; n.resize(n.size() - 4);
+        AddMap(s, ReadFile(dir + fd.cFileName), n, "placed in game (dev)");
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static uint64_t UserMapsTime() {
+    uint64_t sum = 0;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA((g_dir + "EchoVRMusic\\maps\\*.txt").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do sum = sum * 31 + (((uint64_t)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime) +
+                 fd.nFileSizeLow;
+        while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    return sum;
+}
+#endif
+
 // Changes when the registry settings change.
 static uint64_t ConfigTime() {
     uint64_t sum = 0;
@@ -299,6 +340,9 @@ static uint64_t ConfigTime() {
         sum += ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
         RegCloseKey(key);
     }
+#ifdef EVM_DEV
+    sum = sum * 31 + UserMapsTime();
+#endif
     return sum;
 }
 
@@ -307,6 +351,9 @@ static void LoadConfig(bool first) {
     ForEachLine(BUILTIN_SETTINGS, [&](const std::string& k, const std::string& v) { ApplySetting(s, k, v); });
     for (const auto& m : BUILTIN_MAPS) AddMap(s, m.text, m.level, "built in");
     LoadRegistrySettings(s);
+#ifdef EVM_DEV
+    LoadUserMaps(s);
+#endif
     std::string oldSource;
     {
         std::lock_guard<std::mutex> lk(g_settingsLock);
@@ -403,8 +450,11 @@ static int64_t FillVoice(AudioDelegate* d, int16_t* out, uint16_t maxFrames) {
             const float* f = ring + (pos & capture::kMask) * 2;
             s = v->channel == 1 ? f[0] : v->channel == 2 ? f[1] : 0.5f * (f[0] + f[1]);
         }
-        s *= gain * (g0 + step * i) * 32767.0f;
-        out[i] = (int16_t)(s > 32767.0f ? 32767.0f : s < -32768.0f ? -32768.0f : s);
+        s *= gain * (g0 + step * i);
+        // Volume above 100% can push past full scale: round peaks off above 0.9 instead of clipping.
+        float a = fabsf(s);
+        if (a > 0.9f) s = (s < 0 ? -1.0f : 1.0f) * (0.9f + 0.1f * tanhf((a - 0.9f) / 0.1f));
+        out[i] = (int16_t)(s * 32767.0f);
     }
     return maxFrames;
 }
@@ -567,14 +617,89 @@ static void ShapeByDistance(const Settings& s) {
     }
 }
 
+#ifdef EVM_DEV
+// Dev build: key 1 adds a speaker where your head is to this level's file in maps\ (the first press
+// on a level each session starts the file over); key 2 removes the last one.
+static std::atomic<bool> g_devAdd{false}, g_devUndo{false};
+
+static std::string LevelFile(const Settings& s, uint64_t level, std::string* name) {
+    auto lv = s.levels.find(level);
+    char hex[32]; snprintf(hex, sizeof hex, "level_%016llx", (unsigned long long)level);
+    std::string known = LevelName(level);
+    *name = lv != s.levels.end() && !lv->second.name.empty() ? lv->second.name : !known.empty() ? known : hex;
+    return g_dir + "EchoVRMusic\\maps\\" + *name + ".txt";
+}
+
+static void AddSpeakerAtHead(const Settings& s) {
+    uint64_t obj = 0;
+    for (auto& kv : g_emitters) if (!kv.second.voices.empty()) { obj = kv.second.voices[0]->obj; break; }
+    uint64_t ids[4]; uint32_t n = 4;
+    AkTransform head = {};
+    if (!obj || AkGetListeners(obj, ids, &n) != AK_Success || !n || AkGetListenerPosition(ids[0], &head) != AK_Success) {
+        Log("add speaker: no music is playing yet, so there is no listener to ask");
+        return;
+    }
+    uint64_t level = g_level.load();
+    std::string name, path = LevelFile(s, level, &name);
+    static std::set<uint64_t> started;
+    bool fresh = started.insert(level).second;
+    CreateDirectoryA((g_dir + "EchoVRMusic").c_str(), nullptr);
+    CreateDirectoryA((g_dir + "EchoVRMusic\\maps").c_str(), nullptr);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), fresh ? "w" : "a") || !f) { Log("add speaker: can't write %s", path.c_str()); return; }
+    if (fresh)
+        fprintf(f, "# EchoVRMusic speakers for %s, placed in game with key 1 (your head position)\n"
+                   "# Echo coordinates in metres: x, y (up), z\nLevel = %s\nLevelId = 0x%016llx\n",
+                name.c_str(), name.c_str(), (unsigned long long)level);
+    fprintf(f, "Speaker = %.3f %.3f %.3f\n", head.pos.x, head.pos.y, head.pos.z);
+    fclose(f);
+    Log("added speaker at x=%.2f y=%.2f z=%.2f to %s%s", head.pos.x, head.pos.y, head.pos.z, path.c_str(),
+        fresh ? " (file started over)" : "");
+}
+
+static void UndoSpeaker(const Settings& s) {
+    std::string name, path = LevelFile(s, g_level.load(), &name);
+    std::vector<std::string> lines;
+    {
+        std::string text = ReadFile(path);
+        size_t i = 0;
+        while (i < text.size()) {
+            size_t j = text.find('\n', i);
+            if (j == std::string::npos) j = text.size() - 1;
+            lines.push_back(text.substr(i, j - i + 1));
+            i = j + 1;
+        }
+    }
+    for (size_t i = lines.size(); i-- > 0;) {
+        if (lines[i].rfind("Speaker", 0) == 0) {
+            Log("removed %s", Trim(lines[i]).c_str());
+            lines.erase(lines.begin() + i);
+            FILE* f = nullptr;
+            if (fopen_s(&f, path.c_str(), "w") || !f) return;
+            for (auto& l : lines) fputs(l.c_str(), f);
+            fclose(f);
+            return;
+        }
+    }
+    Log("undo: no speakers left in %s", path.c_str());
+}
+#endif
+
 static void Tick() {
     static uint32_t frame = 0;
     frame++;
     Settings s = Snapshot();
     uint32_t rate = capture::SampleRate();
-    bool on = g_enabled.load() && rate != 0;
+    // rate is 0 for a moment while the capture restarts (music source changed). Keep the speakers
+    // through that: they play silence meanwhile. Tearing them all down and back up on each change
+    // crashed Wwise (a voice list still pointing at a removed voice).
+    bool on = g_enabled.load();
 
     std::lock_guard<std::mutex> lk(g_lock);
+#ifdef EVM_DEV
+    if (g_devAdd.exchange(false)) AddSpeakerAtHead(s);
+    if (g_devUndo.exchange(false)) UndoSpeaker(s);
+#endif
     // New level or settings: rebuild every speaker (the number of voices can change).
     if (g_levelChanged.exchange(false))
         for (auto& kv : g_emitters) { DestroyVoices(kv.second); kv.second.rate = 0; kv.second.logged.clear(); }
@@ -618,7 +743,7 @@ static void Tick() {
 
         bool playing = on && !e.music.empty();
         bool want = playing && (!mapSpeakers || src == primary) && !(anyPlaced && followers.count(src));
-        if (!want || (e.rate && e.rate != rate)) {
+        if (!want || (rate && e.rate && e.rate != rate)) {
             if (!e.voices.empty()) { DestroyVoices(e); Log("speaker on 0x%llx stopped", (unsigned long long)src); }
             e.rate = 0;
         }
@@ -628,7 +753,7 @@ static void Tick() {
             DestroyVoices(e);
             e.rate = 0;
         }
-        if (want && e.voices.empty()) CreateVoices(src, e, s, rate);
+        if (want && e.voices.empty() && rate) CreateVoices(src, e, s, rate);
         else if (want && (e.positionsChanged || e.follow || (e.positions.empty() && frame % 10 == 0))) {
             PlaceVoices(src, e, s);
             e.positionsChanged = false;
@@ -814,6 +939,9 @@ static void Install() {
     char path[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     Log("EchoVRMusic loaded into %s (base %p)", path, exe);
+#ifdef EVM_DEV
+    Log("DEV BUILD: key 1 places a speaker at your head, key 2 removes the last one (plugins\\EchoVRMusic\\maps\\)");
+#endif
 
     if (!SigMatches(g_base + RVA_AUDIOINPUT_EXECUTE, SIG_EXECUTE, sizeof SIG_EXECUTE) ||
         !SigMatches(g_base + RVA_REGISTRY_LOAD, SIG_REGISTRY_LOAD, sizeof SIG_REGISTRY_LOAD)) {
@@ -882,6 +1010,19 @@ static void WatchThread() {
                      (GetAsyncKeyState('M') & 0x8000);
         if (chord && !down) { g_enabled = !g_enabled; Log("music through speakers %s", g_enabled ? "ON" : "OFF"); }
         down = chord;
+#ifdef EVM_DEV
+        {   // keys 1 and 2, only while Echo has focus
+            DWORD fgPid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
+            bool focused = fgPid == GetCurrentProcessId();
+            static bool d1 = false, d2 = false;
+            bool k1 = focused && ((GetAsyncKeyState('1') | GetAsyncKeyState(VK_NUMPAD1)) & 0x8000);
+            bool k2 = focused && ((GetAsyncKeyState('2') | GetAsyncKeyState(VK_NUMPAD2)) & 0x8000);
+            if (k1 && !d1) g_devAdd = true;
+            if (k2 && !d2) g_devUndo = true;
+            d1 = k1; d2 = k2;
+        }
+#endif
         static int n = 0;
         if (++n % 10 == 0) {
             uint64_t t = ConfigTime();

@@ -13,6 +13,7 @@
 #include <thread>
 #include <algorithm>
 #include <cwctype>
+#include <cmath>
 
 namespace capture {
 
@@ -89,12 +90,23 @@ static IAudioClient* ActivateProcessLoopback(DWORD pid, bool include) {
     return h->client;
 }
 
+// Limiter on the captured mix. With "all of Windows", several apps playing at once add up past
+// full scale, and hard clipping that is what distorted the music. The gain drops at once to keep
+// peaks under kCeiling, then recovers over about 150 ms.
+static const float kCeiling = 0.89f;                  // about -1 dBFS
+static const float kRelease = 0.99986f;               // per sample at 48 kHz: ~150 ms
+static float g_envelope = 0.0f;
+
 static void Push(const float* data, UINT32 frames, bool silent) {
     uint64_t w = g_write.load(std::memory_order_relaxed);
     for (UINT32 i = 0; i < frames; i++) {
         float* dst = g_ring + ((w + i) & kMask) * 2;
-        dst[0] = silent ? 0.0f : data[i * 2];
-        dst[1] = silent ? 0.0f : data[i * 2 + 1];
+        float l = silent ? 0.0f : data[i * 2], r = silent ? 0.0f : data[i * 2 + 1];
+        float peak = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
+        g_envelope = peak > g_envelope ? peak : g_envelope * kRelease + peak * (1.0f - kRelease);
+        float g = g_envelope > kCeiling ? kCeiling / g_envelope : 1.0f;
+        dst[0] = l * g;
+        dst[1] = r * g;
     }
     g_write.store(w + frames, std::memory_order_release);
 }
