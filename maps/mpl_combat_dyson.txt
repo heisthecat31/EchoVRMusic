@@ -1,0 +1,21 @@
+# EchoVRMusic speakers for mpl_combat_dyson, placed in game with key 1 (your head position)
+# Echo coordinates in metres: x, y (up), z
+Level = mpl_combat_dyson
+LevelId = 0x43e2da7914642604
+Speaker = -200.399 -8.344 -199.901
+Speaker = -100.447 17.155 -0.095
+Speaker = -29.176 0.569 0.032
+Speaker = -8.940 1.374 5.084
+Speaker = -7.147 6.312 -16.760
+Speaker = -0.051 8.490 -30.816
+Speaker = -35.479 -1.190 -35.491
+Speaker = 7.645 6.533 -16.479
+Speaker = 8.992 1.521 5.201
+Speaker = 0.020 3.127 13.616
+Speaker = 150.248 -8.474 199.996
+Speaker = 99.838 17.108 0.040
+Speaker = 28.810 0.617 0.056
+Speaker = 36.066 -0.061 36.333
+Speaker = 35.451 -0.919 -35.418
+Speaker = -0.004 22.245 11.656
+Speaker = -36.103 -0.007 36.054

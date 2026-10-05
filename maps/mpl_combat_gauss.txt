@@ -1,0 +1,30 @@
+﻿# EchoVRMusic speakers for mpl_combat_gauss (Surge), placed in game with key 1 (your head position)
+# Echo coordinates in metres: x, y (up), z
+Level = mpl_combat_gauss
+LevelId = 0x43e2da7a0c623a19
+Speaker = -200.306 -8.763 -199.855
+Speaker = -39.923 1.904 33.345
+Speaker = -17.295 5.330 -7.351
+Speaker = 20.684 4.848 -3.885
+Speaker = 21.629 4.726 -3.019
+Speaker = 33.682 2.575 20.963
+Speaker = 44.622 2.618 8.356
+Speaker = -17.377 5.270 -7.263
+Speaker = 150.141 -8.644 200.007
+Speaker = 52.468 3.035 27.827
+Speaker = -48.886 13.635 0.490
+Speaker = -28.728 13.612 29.063
+Speaker = -37.035 11.929 60.929
+Speaker = -61.839 17.591 37.347
+Speaker = -73.160 13.376 15.550
+Speaker = -76.137 13.555 12.757
+Speaker = -95.635 16.809 20.243
+Speaker = -95.693 16.768 20.251
+Speaker = -95.679 16.777 5.594
+Speaker = -95.690 16.779 5.575
+Speaker = -119.580 18.356 3.887
+Speaker = -124.917 18.385 21.099
+Speaker = -112.855 18.158 14.298
+Speaker = -127.627 18.319 7.447
+Speaker = -132.124 14.568 12.608
+Speaker = -146.596 13.606 12.592

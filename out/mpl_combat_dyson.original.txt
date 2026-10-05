@@ -1,0 +1,17 @@
+# EchoVRMusic speakers for mpl_combat_dyson, made in Blender ()
+# Echo coordinates in metres: x, y (up), z
+Level = mpl_combat_dyson
+LevelId = 0x43e2da7914642604
+Speaker = 99.356 15.883 -0.021    # Speaker
+Speaker = -100.634 16.053 -0.000    # Speaker.001
+Speaker = 9.263 4.613 -9.689    # Speaker.002
+Speaker = -9.268 4.613 -9.689    # Speaker.003
+Speaker = 10.846 1.411 6.225    # Speaker.004
+Speaker = -9.752 1.442 6.008    # Speaker.005
+Speaker = 0.000 4.292 -0.000    # Speaker.006
+Speaker = -29.727 0.000 -0.000    # Speaker.007
+Speaker = 29.653 0.000 -0.000    # Speaker.008
+Speaker = 0.000 8.307 -30.775    # Speaker.009
+Speaker = 33.501 -1.198 -33.555    # Speaker.010
+Speaker = -34.108 -1.592 -33.989    # Speaker.011
+Speaker = 0.000 21.827 11.066    # Speaker.012
